@@ -12,7 +12,7 @@ CCDC is run in three steps to avoid hitting memory limits. The first step (tempo
 
 ### LandTrendr
 
-LandTrendr script uses an extended version of the original LandTrendr algorithm; however, it is equivalent to use the original `ltgee.runLT`.
+LandTrendr script to run the LandTrendR temporal segmentation. This is just a modification of the original LandTrendr script.
 
 ## Rscripts
 
