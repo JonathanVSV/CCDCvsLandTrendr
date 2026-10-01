@@ -8,8 +8,7 @@ var roiJ = ee.FeatureCollection("users/JonathanVSV/CCDC/roiAguacate"),
 
 // load the LandTrendr.js module
 var ltgee = require('users/JonathanVSV/Defor-DegradDetect:Landtrendr_mod'); 
-// For Roy et al 2016 harmonization
-var lcb = require('users/jstnbraaten/modules:ee-lcb.js');
+
 //var ltgee = require('users/emaprlab/public:Modules/LandTrendr-braaten-test.js'); 
 // previous
 var tester = avocado95.unmask(0)
@@ -97,6 +96,7 @@ var runParams = {
 
 // See definitions
 // https://emapr.github.io/LT-GEE/api.html#getchangemap
+
 var changeParams = 
   {
    index:  'NBR', // NBR as CCDC
@@ -115,13 +115,220 @@ var changeParams =
 
 
 //-------------------------------------------------------------------------------
-// run landtrendr
-var ltResults = ltgee.runLT(startYear, endYear, startDay, endDay, roi, changeParams.index, [], runParams, maskThese);
+// All this is done by the function ltgee.runLT
+// Possibility to simplify script by running this func directly.
 
-// Want to see time series?
-// var annualIm = buildSRcollection(startYear, endYear, startDay, endDay, roi, maskThese);
+ print('l7', l7.limit(10));
 
-// Get greatest change map according to changeParams
+// Function to filter landsat 8 images
+var filterImCol = function (imageCol, sensor){
+  
+  // Make automated band selection
+  var bandas = ee.Algorithms.If(sensor == 8,
+    ['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7'],
+    ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7']);
+  
+  // Cloud masking function
+  var maskCloud57 = function(image){
+    
+    var qa = image.select('QA_PIXEL');
+    
+    var dilCloud = 1 << 1;
+    var cloud = 1 << 3;
+    var cloudShadow = 1 << 4;
+  
+    // bitwiseAnd allows you to do operations based on bit values
+    var clearMask = qa.bitwiseAnd(cloud).eq(0)
+                      .and(qa.bitwiseAnd(cloudShadow).eq(0))
+                      .and(qa.bitwiseAnd(dilCloud).eq(0));
+                    
+    return image.updateMask(clearMask);
+  };
+  
+  var maskCloud8 = function(image){
+    
+    var qa = image.select('QA_PIXEL');
+    
+    var dilCloud = 1 << 1;
+    var cirrus = 1 << 2;
+    var cloud = 1 << 3;
+    var cloudShadow = 1 << 4;
+  
+    // bitwiseAnd allows you to do operations based on bit values
+    var clearMask = qa.bitwiseAnd(cloud).eq(0)
+                      .and(qa.bitwiseAnd(cirrus).eq(0))
+                      .and(qa.bitwiseAnd(cloudShadow).eq(0))
+                      .and(qa.bitwiseAnd(dilCloud).eq(0));
+                    
+    return image.updateMask(clearMask);
+  };
+  
+  var temp = ee.ImageCollection(imageCol)
+   .filterDate(dateStart,dateEnd)
+   .filter(ee.Filter.calendarRange(startMonth, endMonth, 'month'))
+   // Spatial filter
+   .filterBounds(roi)
+   // Filter by metadata property
+   // .filter(ee.Filter.lte('CLOUD_COVER_LAND',50));
+   
+  
+  temp = ee.Algorithms.If(sensor == 8,
+    temp.map(maskCloud8),
+    temp.map(maskCloud57)
+        );
+    
+  // Temporal filter
+  temp = ee.ImageCollection(temp)
+     // Seleccionar bandas
+     .select(bandas)
+     // Rename bands
+     .map(function(image){
+       return image.rename(['B','G','R','NIR','SWIR1','SWIR2']);
+     })
+     .map(function applyScaleFactors(image) {
+        var opticalBands = image.select(['B','G','R','NIR','SWIR1','SWIR2'])
+                                .multiply(0.0000275)
+                                .add(-0.2);
+        
+        return image.addBands(opticalBands, null, true);
+      })
+     .map(function(image){
+     var NBR = image.normalizedDifference(['NIR', 'SWIR2'])
+      .rename('NBR')
+      // Invert as SWIR band so loss are characterized by positive change
+      .multiply(-1)
+      .multiply(1000)
+      .round()
+      .toInt();
+     return image.addBands(NBR);
+   });
+  //temp = ee.ImageCollection(temp).copyProperties(ee.ImageCollection(imageCol), 'system:time_start');
+  // Copy capture date property
+  return temp;
+};
+
+// Use function
+var l5c = filterImCol(l5, 5);
+var l7c = filterImCol(l7, 7);
+var l8c = filterImCol(l8, 8);
+var l9c = filterImCol(l9, 8);
+
+print('l8c', l8c);
+print('l7c', l7c);
+print('l5c', l5c);
+
+// Map.addLayer(l5c.first(), {bands:['R','G','B'], min:0.02, max:0.2}, 'l5 test');
+// Map.addLayer(l8c.first(), {bands:['R','G','B'], min:0.02, max:0.2}, 'l8 test')
+
+print('l7c', l7c);
+print('l5c', l5c);
+
+// Here we already have the collection of landsat 7 and 8 together
+var all = l5c.merge(l7c)
+             .merge(l8c)
+             .merge(l9c);
+
+// Limit 10
+print('all', all.limit(10));
+
+// Year to loop over
+// 1 year less than final
+var años = ee.List.sequence(startYear, endYear-1, 1);
+print('años', años);
+
+// Year loop
+var resul = años.map(function(year){
+  var start = ee.Date.fromYMD(ee.Number(year), 1, 1);
+  var end = start.advance(1, 'year');
+  
+  var filt = all.filterDate(start, end)
+                .median()
+                .clip(roi);
+  
+  return filt//.addBands(unmixedImage)
+          .set('system:time_start', ee.Number(start.millis()));
+});
+
+// No hay imagen 2001, pegar la del 2000 para evitar que las fechas se recorran un año para atrás
+// parecía que detectaba el disturbio antes de que ocurriera.
+
+resul = resul.set(1, ee.Image(resul.get(0))
+                                   .set('system:time_start', ee.Number(ee.Date.fromYMD(ee.Number(2001), 1, 1).millis())));
+
+var annualMosaicCollection = ee.ImageCollection.fromImages(resul);
+print('annualMosaicCollection', annualMosaicCollection);
+
+// Sequence generator function (commonly referred to as "range", e.g. Clojure, PHP etc)
+// var añosUser = años.map(function(x){
+//   return ee.String(ee.Number(x).int());
+// }).evaluate();
+var añosUser = [
+  '2000',
+  '2001',
+  '2002',
+  '2003',
+  '2004',
+  '2005',
+  '2006',
+  '2007',
+  '2008',
+  '2009',
+  '2010',
+  '2011',
+  '2012',
+  '2013',
+  '2014',
+  '2015',
+  '2016',
+  '2017',
+  '2018',
+  '2019',
+  '2020',
+  '2021',
+  '2022',
+  '2023',
+  '2024',
+  '2025'
+];
+var bandByYear = annualMosaicCollection.select('NBR');
+var bandByYear = bandByYear.toBands()
+                           .rename(añosUser)
+                           .round()
+                           .toInt16();
+                           
+print('bandByYear',bandByYear);
+// Scaled to 1000
+//Map.addLayer(bandByYear.multiply, {bands: yearBand, min:-700, max: -87}, 'NBR');
+Map.addLayer(bandByYear.multiply(-1), {bands: yearBand, min:-121, max: 734}, 'bandByYear normal', false);
+
+//select study period to download 
+//(fitted data observations = total number of observations - 1)
+//var NDVI_forecast = NDVI_forecast.select(ee.List.sequence(173,273));
+var im_geo = bandByYear.geometry();
+print(im_geo);
+
+// Export the image, specifying the CRS, transform, and region.
+Export.image.toDrive({
+  image: bandByYear.multiply(-1).toInt16(),
+  description: 'NBRByYear',
+  folder: folder,
+  region: roi,
+  scale: 30,
+  crs: 'EPSG:6372'
+});                     
+
+// Map.centerObject(geometry, 11);
+//Map.addLayer(annualMosaicCollection.select(['vegMean']).filter(ee.Filter.eq('system:time_start', ee.Date.fromYMD(1995, 6, 1).millis())), {min: 0,max:1}, 'annualMosaicCollection 2015');
+//Map.addLayer(annualMosaicCollection.select(['vegMean']).filter(ee.Filter.eq('system:time_start', ee.Date.fromYMD(2023, 6, 1).millis())), {min: 0, max: .6, palette: palettes.gv}, 'annualMosaicCollection 2023');
+print('annualMosaicCollection', annualMosaicCollection);
+
+runParams.timeSeries = annualMosaicCollection.select('NBR');
+
+// Run LandTrendr on Your Image Collection
+var ltResults = ee.Algorithms.TemporalSegmentation.LandTrendr(runParams);
+print('ltResults',ltResults);
+//Map.addLayer(lt, {}, 'lt');
+
 var resul = ltgee.getChangeMap(ltResults, changeParams)
                  .toFloat();
 
