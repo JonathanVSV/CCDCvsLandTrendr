@@ -23,12 +23,11 @@ ccdc <- rast("D:/GeoInfo/CCDCvsLandtrendr/CCDCChanges_00_26_forestAvocadoMask.ti
 forest <- rast("D:/GeoInfo/CCDCvsLandtrendr/BosqueMask_geom3.tif")
 forest[forest == 0] <- NA
 
-freq(forest) |>
-  mutate(areaha = count * res(forest)[1] * res(forest)[2] / 10000)
+plot(forest)
 
 # Read final validation points
 verifpts <- st_read(
-  "Results/FINAL_verifpts_landt_vs_ccdc_2000-2025_all.gpkg"
+  "gpkg/FINAL_verifpts_landt_vs_ccdc_2000-2025_all_driver.gpkg"
 )
 
 bounder <- c(
@@ -41,6 +40,9 @@ bounder <- c(
 landt <- crop(landt, ext(bounder))
 ccdc <- crop(ccdc, ext(bounder))
 forest <- crop(forest, ext(bounder))
+
+freq(forest) |>
+  mutate(areaha = count * res(forest)[1] * res(forest)[2] / 10000)
 
 # Get magnitude and match images
 landt_year <- landt["yod"]
@@ -257,6 +259,7 @@ areas <- freq(areaConteo) |>
   pull(areaha)
 
 names(areas) <- c(0, 1)
+sum(areas)
 
 resul_landt_olof <- olofsson(resul_landt$sumVerif, resul_landt$pred, areas)
 
@@ -363,7 +366,7 @@ df_mc <- mag_df |>
     )
   )
 
-# ---- Overall agreement in correctness between the two methods ----
+# ---- Overall agreement in correctness between the two methods 
 agree_overall <- df_mc |>
   summarise(
     n               = n(),
@@ -380,7 +383,7 @@ mcnemar.test(matrix(c(agree_overall$both_correct,
                       agree_overall$only_LandTrendr, 
                       agree_overall$both_wrong), nrow = 2))
 
-# ---- Same, restricted to reference disturbances (sumVerif == 1) ----
+# ---- Same, restricted to reference disturbances (sumVerif == 1) 
 # How many real disturbances are detected (pred == 1) by both / one / neither method
 agree_disturbance <- df_mc |>
   filter(sumVerif == 1) |>
@@ -393,7 +396,7 @@ agree_disturbance <- df_mc |>
   )
 agree_disturbance
 
-# ---- Broken down by common / exclusive stratum ----
+# ---- Broken down by common / exclusive stratum 
 agree_by_type <- df_mc |>
   count(Type2, agreement, .drop = FALSE) |>
   pivot_wider(names_from = agreement, values_from = n, values_fill = 0)
@@ -404,7 +407,7 @@ agree_by_stratum <- df_mc |>
   pivot_wider(names_from = agreement, values_from = n, values_fill = 0)
 agree_by_stratum
 
-# ---- McNemar's test on paired correctness ----
+# ---- McNemar's test on paired correctness 
 #                    CCDC correct   CCDC wrong
 # LandTrendr correct     n11            n12
 # LandTrendr wrong       n21            n22
@@ -421,7 +424,7 @@ mcnemar_tab <- matrix(
 mcnemar_tab
 mcnemar.test(mcnemar_tab)
 
-# ---- Exclusivo / common ----
+# ---- Exclusivo / common 
 df_mc |>
   count(Model2, Type2, Proceso2, agreement, .drop = FALSE) |>
   pivot_wider(names_from = agreement, values_from = n, values_fill = 0) |>
@@ -715,3 +718,42 @@ writeRaster(
   overwrite = TRUE
 )
 
+# Analyze most common errors by class -----
+
+# Changes first
+resul_driver <- verifpts |>
+  st_drop_geometry() |>
+  filter(sumVerif == 1) |> 
+  filter(Proceso2 == "Cambio bosque") |> 
+  mutate(driver2 = str_to_title(str_extract(Driver, "Degradación|degradacion|CUS|aguacate|Aguacate|degradación|Agricultura|agricultura"))) |>
+  mutate(across(driver2, ~ifelse(is.na(.x), "Other", .x))) |>
+  mutate(across(driver2, ~case_when(.x == "Degradación" ~ "Degradation",
+                                    .x == "Cus" ~ "LULC",
+                                    .x == "Agricultura" ~ "LULC",
+                                    .x == "Aguacate" ~ "Avocado",
+                                    TRUE ~ "Other"))) |>
+  mutate(across(Model2, ~ ifelse(Type2 == "Common", "CCDC/LandTrendr", .x))) |>
+  group_by(Proceso2, Model2, Type2, driver2) |>
+  count() |>
+  group_by(Proceso2, Model2, Type2) |>
+  mutate(perc = n/sum(n) * 100) |>
+  ungroup()
+
+resul_driver |>
+  ggplot(aes(x = driver2, y = perc)) +
+  geom_col() +
+  facet_wrap(~Model2) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0,100)) +
+  labs(x = "Disturbance driver", y = "Observations percentage (%)") +
+  cowplot::theme_cowplot() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+ggsave(
+  paste0("Plots/driversValidation_",landt_months,".jpeg"),
+  width = 16,
+  height = 12,
+  units = "cm",
+  dpi = 300
+)
